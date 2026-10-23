@@ -1,4 +1,4 @@
-name: HalMeel - Expo Android APK
+name: HalMeel Android APK
 
 on:
   workflow_dispatch:
@@ -10,45 +10,56 @@ permissions:
   contents: read
 
 concurrency:
-  group: halmeel-android-build
+  group: halmeel-android-apk
   cancel-in-progress: false
 
 jobs:
-  build-apk:
+  build:
     name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Check Expo project
+      - name: Verify project files
+        shell: bash
         run: |
+          set -e
           test -f package.json
-          test -f app.json || test -f app.config.js || test -f app.config.ts
           test -f eas.json
+
+          if [ ! -f app.json ] && \
+             [ ! -f app.config.js ] && \
+             [ ! -f app.config.ts ] && \
+             [ ! -f app.config.mjs ]; then
+            echo "ERROR: Expo app configuration is missing."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Check Expo configuration
+      - name: Validate Expo configuration
         run: npx expo config --type public
 
       - name: Install EAS CLI
         run: npm install --global eas-cli
 
-      - name: Verify Expo authentication
+      - name: Verify Expo token
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -z "$EXPO_TOKEN" ]; then
-            echo "Missing EXPO_TOKEN repository secret."
+            echo "ERROR: EXPO_TOKEN is missing."
             exit 1
           fi
           eas whoami
@@ -63,7 +74,7 @@ jobs:
             --non-interactive \
             --wait
 
-      - name: Find completed APK build
+      - name: Get latest completed build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -75,7 +86,9 @@ jobs:
 
           node -e '
             const fs = require("fs");
-            const builds = JSON.parse(fs.readFileSync("build.json", "utf8"));
+            const builds = JSON.parse(
+              fs.readFileSync("build.json", "utf8")
+            );
             const url = builds[0]?.artifacts?.buildUrl;
             if (!url) {
               console.error("APK download URL not found.");
@@ -85,17 +98,21 @@ jobs:
           '
 
       - name: Download APK
+        shell: bash
         run: |
+          set -e
           mkdir -p apk
           curl --fail --location --retry 5 \
+            --retry-delay 3 \
             "$(cat apk-url.txt)" \
             --output apk/HalMeel.apk
           test -s apk/HalMeel.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: HalMeel-Android-APK
           path: apk/HalMeel.apk
           if-no-files-found: error
           retention-days: 30
+          
