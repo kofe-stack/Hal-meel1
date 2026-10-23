@@ -1,4 +1,5 @@
-name: HalMeel Android APK
+
+name: HalMeel - Build Android APK
 
 on:
   workflow_dispatch:
@@ -27,20 +28,27 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
 
-      - name: Verify project files
+      - name: Check project files
         shell: bash
         run: |
           set -e
-          test -f package.json
-          test -f eas.json
+
+          test -f package.json || {
+            echo "ERROR: package.json is missing from repository root."
+            exit 1
+          }
+
+          test -f eas.json || {
+            echo "ERROR: eas.json is missing from repository root."
+            exit 1
+          }
 
           if [ ! -f app.json ] && \
              [ ! -f app.config.js ] && \
              [ ! -f app.config.ts ] && \
-             [ ! -f app.config.mjs ]; then
+             [ ! -f app.config.mjs ] && \
+             [ ! -f app.config.cjs ]; then
             echo "ERROR: Expo app configuration is missing."
             exit 1
           fi
@@ -54,14 +62,15 @@ jobs:
       - name: Install EAS CLI
         run: npm install --global eas-cli
 
-      - name: Verify Expo token
+      - name: Verify Expo authentication
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -z "$EXPO_TOKEN" ]; then
-            echo "ERROR: EXPO_TOKEN is missing."
+            echo "ERROR: EXPO_TOKEN secret is missing."
             exit 1
           fi
+
           eas whoami
 
       - name: Build Android APK
@@ -74,45 +83,57 @@ jobs:
             --non-interactive \
             --wait
 
-      - name: Get latest completed build
+      - name: Find APK download URL
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        shell: bash
         run: |
+          set -e
+
           eas build:list \
             --platform android \
             --status finished \
             --limit 1 \
             --json > build.json
 
-          node -e '
-            const fs = require("fs");
-            const builds = JSON.parse(
-              fs.readFileSync("build.json", "utf8")
-            );
-            const url = builds[0]?.artifacts?.buildUrl;
-            if (!url) {
-              console.error("APK download URL not found.");
-              process.exit(1);
-            }
-            fs.writeFileSync("apk-url.txt", url);
-          '
+          node <<'NODE'
+          const fs = require("fs");
+          const builds = JSON.parse(
+            fs.readFileSync("build.json", "utf8")
+          );
+
+          const url = builds[0]?.artifacts?.buildUrl;
+
+          if (!url) {
+            console.error("ERROR: APK URL not found in EAS build results.");
+            process.exit(1);
+          }
+
+          fs.writeFileSync("apk-url.txt", url);
+          NODE
 
       - name: Download APK
         shell: bash
         run: |
           set -e
           mkdir -p apk
+
           curl --fail --location --retry 5 \
             --retry-delay 3 \
             "$(cat apk-url.txt)" \
             --output apk/HalMeel.apk
+
           test -s apk/HalMeel.apk
 
-      - name: Upload APK
+          if [ "$(od -An -tx1 -N2 apk/HalMeel.apk | tr -d ' \n')" != "504b" ]; then
+            echo "ERROR: Downloaded file does not look like an APK ZIP archive."
+            exit 1
+          fi
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: HalMeel-Android-APK
           path: apk/HalMeel.apk
           if-no-files-found: error
           retention-days: 30
-          
