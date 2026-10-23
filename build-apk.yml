@@ -1,0 +1,107 @@
+name: HalMeel - Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: halmeel-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-apk:
+    name: Build Android APK with Expo EAS
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify Expo project
+        run: |
+          test -f package.json
+          test -f app.json
+          test -f eas.json
+          node -e "const p=require('./package.json'); if(!p.dependencies || !p.dependencies.expo) process.exit(1); console.log('Expo:', p.dependencies.expo)"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install EAS CLI
+        run: npm install --global eas-cli@latest --no-audit --no-fund
+
+      - name: Verify EAS authentication
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "ERROR: EXPO_TOKEN secret is missing."
+            echo "GitHub: Settings -> Secrets and variables -> Actions -> New repository secret"
+            exit 1
+          fi
+          eas whoami
+
+      - name: Build APK
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform android \
+            --profile preview \
+            --non-interactive \
+            --wait
+
+      - name: Get latest finished APK URL
+        id: apk
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build:list --platform android --status finished --limit 1 --json > build.json
+          node <<'NODE'
+          const fs = require('fs');
+          const data = JSON.parse(fs.readFileSync('build.json', 'utf8'));
+          const build = Array.isArray(data) ? data[0] : (data.builds && data.builds[0]);
+          const url = build?.artifacts?.buildUrl;
+          if (!url) {
+            console.error('No APK build URL found. Raw response:');
+            console.error(JSON.stringify(data, null, 2));
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `url=${url}\n`);
+          console.log(`APK URL: ${url}`);
+          NODE
+
+      - name: Download APK
+        run: |
+          mkdir -p artifacts
+          curl --fail --location --retry 3 --retry-delay 2 "${{ steps.apk.outputs.url }}" -o artifacts/HalMeel.apk
+          test -s artifacts/HalMeel.apk
+          file artifacts/HalMeel.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HalMeel-Android-APK
+          path: artifacts/HalMeel.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          echo "## HalMeel APK" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build completed successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "Download: open this run -> Artifacts -> HalMeel-Android-APK" >> "$GITHUB_STEP_SUMMARY"
+          echo "EAS APK URL: ${{ steps.apk.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
