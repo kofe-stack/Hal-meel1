@@ -6,63 +6,53 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: halmeel-android-build
+  cancel-in-progress: false
+
 jobs:
   build-apk:
-    name: Build HalMeel APK
+    name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-      # 1. Download project
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      # 3. Check Expo project
-      - name: Check project
+      - name: Check Expo project
         run: |
-          echo "Checking project files..."
           test -f package.json
           test -f app.json || test -f app.config.js || test -f app.config.ts
-          echo "Expo project detected."
+          test -f eas.json
 
-      # 4. Install dependencies
-      # npm install is intentional.
-      # It does NOT require package-lock.json.
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
-      # 5. Install EAS CLI
+      - name: Check Expo configuration
+        run: npx expo config --type public
+
       - name: Install EAS CLI
         run: npm install --global eas-cli
 
-      # 6. Check EAS login
-      - name: Check Expo account
+      - name: Verify Expo authentication
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           if [ -z "$EXPO_TOKEN" ]; then
-            echo "ERROR: EXPO_TOKEN secret is missing."
+            echo "Missing EXPO_TOKEN repository secret."
             exit 1
           fi
-
           eas whoami
 
-      # 7. Verify EAS configuration
-      - name: Check EAS configuration
-        run: |
-          if [ ! -f eas.json ]; then
-            echo "ERROR: eas.json is missing."
-            exit 1
-          fi
-
-          echo "eas.json found."
-
-      # 8. Build Android APK
       - name: Build Android APK
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
@@ -73,8 +63,7 @@ jobs:
             --non-interactive \
             --wait
 
-      # 9. Get latest successful build
-      - name: Get APK URL
+      - name: Find completed APK build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
@@ -84,49 +73,25 @@ jobs:
             --limit 1 \
             --json > build.json
 
-          node <<'NODE'
-          const fs = require("fs");
+          node -e '
+            const fs = require("fs");
+            const builds = JSON.parse(fs.readFileSync("build.json", "utf8"));
+            const url = builds[0]?.artifacts?.buildUrl;
+            if (!url) {
+              console.error("APK download URL not found.");
+              process.exit(1);
+            }
+            fs.writeFileSync("apk-url.txt", url);
+          '
 
-          const builds = JSON.parse(
-            fs.readFileSync("build.json", "utf8")
-          );
-
-          if (!builds.length) {
-            console.error("No completed Android build found.");
-            process.exit(1);
-          }
-
-          const url = builds[0]?.artifacts?.buildUrl;
-
-          if (!url) {
-            console.error("APK URL was not found.");
-            process.exit(1);
-          }
-
-          fs.writeFileSync("apk-url.txt", url);
-          console.log("APK URL found.");
-          NODE
-
-      # 10. Download APK
       - name: Download APK
         run: |
           mkdir -p apk
-
-          APK_URL=$(cat apk-url.txt)
-
-          curl \
-            --fail \
-            --location \
-            --retry 5 \
-            --retry-delay 5 \
-            "$APK_URL" \
+          curl --fail --location --retry 5 \
+            "$(cat apk-url.txt)" \
             --output apk/HalMeel.apk
-
           test -s apk/HalMeel.apk
 
-          echo "APK downloaded successfully."
-
-      # 11. Upload APK to GitHub
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
